@@ -11,3 +11,26 @@ You can execute this script with your access (if you have read access over the a
 - If you have a Lambda code, or other code binaries, we would request you share those separately as a zip with us or you can share in github repo as well.
 - Please note: it might be easy if you have VS Code installed in your system you can directly perform all the required steps and run this from the VS code terminal.
  
+--- 
+```
+the what_worked.py is what i used following local account setup:
+ ACCOUNTS = [
+        {
+            'name': 'aws-vss-uipath-test', # replace with your account display name
+            'profile': 'aws-discovery-prod',             # replace with your AWS CLI profile name
+            'regions': ['eu-central-1']         # replace with your desired regions
+        }
+    ]
+
+    # Multiple apps. Use resources='*' for all supported resources.
+    # Filters are optional and combined per app.
+    APPS = [
+         {
+            'name': 'all-resources', #add_production, staging, etc. as needed
+            'resources': '*',
+            'tag_filters': {}, 
+            'vpc_ids': [],
+            'filter_expressions': []
+        }
+    ]
+```
