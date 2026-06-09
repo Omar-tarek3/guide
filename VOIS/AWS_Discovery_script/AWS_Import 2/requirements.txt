@@ -1,0 +1,89 @@
+# Requirements for terraformer_Only_import.py
+#
+# All imports used are Python standard library modules.
+# No third-party Python packages are required.
+#
+# ===========================================================================
+# External Tool Dependencies (must be installed and available on PATH)
+# ===========================================================================
+#
+# ---------------------------------------------------------------------------
+# 1. Python (3.10 or higher)
+#    Purpose: Runs this script
+#    Docs:    https://www.python.org/downloads/
+#
+#    Installation (Windows - recommended via winget):
+#      winget install Python.Python.3.14
+#
+#    Installation (Windows - via Microsoft Store):
+#      Search "Python" in Microsoft Store and install the latest version
+#
+#    Installation (Windows - manual):
+#      1. Download installer from https://www.python.org/downloads/
+#      2. Run installer and CHECK "Add python.exe to PATH"
+#      3. Click "Install Now"
+#
+#    Verify installation:
+#      python --version
+#
+# ---------------------------------------------------------------------------
+# 2. AWS CLI v2
+#    Purpose: Authenticates with AWS, retrieves secrets, discovers regions
+#    Docs:    https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html
+#
+#    Installation (Windows - recommended via MSI installer):
+#      msiexec.exe /i https://awscli.amazonaws.com/AWSCLIV2.msi
+#
+#    Installation (Windows - via winget):
+#      winget install Amazon.AWSCLI
+#
+#    Verify installation:
+#      aws --version
+#
+#    Configure credentials:
+#      aws configure --profile default
+#
+# ---------------------------------------------------------------------------
+# 3. Terraform
+#    Purpose: Downloads the AWS provider plugin used by Terraformer
+#    Docs:    https://www.terraform.io/downloads
+#
+#    Installation (Windows - via Chocolatey):
+#      choco install terraform
+#
+#    Installation (Windows - via winget):
+#      winget install Hashicorp.Terraform
+#
+#    Installation (Windows - manual):
+#      1. Download from https://releases.hashicorp.com/terraform/
+#      2. Extract terraform.exe to a folder on your PATH (e.g. C:\tools\)
+#
+#    Verify installation:
+#      terraform version
+#
+# ---------------------------------------------------------------------------
+# 4. Terraformer
+#    Purpose: Imports existing AWS infrastructure into Terraform state/files
+#    Docs:    https://github.com/GoogleCloudPlatform/terraformer
+#
+#    Installation (Windows - manual):
+#      1. Download the latest release for Windows from:
+#         https://github.com/GoogleCloudPlatform/terraformer/releases
+#         (choose terraformer-aws-windows-amd64.exe)
+#      2. Rename to terraformer.exe
+#      3. Move to a folder on your PATH (e.g. C:\tools\)
+#
+#    Installation (Windows - via PowerShell script):
+#      $url = "https://github.com/GoogleCloudPlatform/terraformer/releases/latest/download/terraformer-aws-windows-amd64.exe"
+#      Invoke-WebRequest -Uri $url -OutFile "$env:USERPROFILE\bin\terraformer.exe"
+#      # Ensure $env:USERPROFILE\bin is in your PATH
+#
+#    Verify installation:
+#      terraformer version
+#
+#    IMPORTANT: Terraformer requires the Terraform AWS provider plugin.
+#    The script handles this automatically via 'terraform init', but you
+#    can also manually place the plugin at:
+#      %USERPROFILE%\.terraform.d\plugins\windows_amd64\
+#
+# ===========================================================================
