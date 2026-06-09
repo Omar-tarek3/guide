@@ -12,8 +12,9 @@ You can execute this script with your access (if you have read access over the a
 - Please note: it might be easy if you have VS Code installed in your system you can directly perform all the required steps and run this from the VS code terminal.
  
 --- 
-```
 the what_worked.py is what i used following local account setup:
+```
+
  ACCOUNTS = [
         {
             'name': 'aws-vss-uipath-test', # replace with your account display name
