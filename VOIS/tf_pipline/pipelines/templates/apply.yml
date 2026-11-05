@@ -1,0 +1,231 @@
+parameters:
+  - name: componentName
+    type: string
+  - name: stageName
+    type: string
+    default: Apply
+  - name: dependsOn
+    type: object
+    default:
+      - Plan
+  - name: action
+    type: string
+  - name: azureServiceConnection
+    type: string
+  - name: terraformVersion
+    type: string
+  - name: workingDirectory
+    type: string
+  - name: stateResourceGroup
+    type: string
+  - name: stateStorageAccount
+    type: string
+  - name: stateContainer
+    type: string
+  - name: stateKey
+    type: string
+  - name: planFileName
+    type: string
+  - name: artifactName
+    type: string
+  - name: additionalArtifactFile
+    type: string
+    default: ''
+  - name: assetsStorageTfvarsFile
+    type: string
+    default: ''
+  - name: assetsStorageResourceGroup
+    type: string
+    default: ''
+  - name: assetsStorageAccountName
+    type: string
+    default: ''
+  - name: robotCredentialsKeyVaultTfvarsFile
+    type: string
+    default: ''
+  - name: preApplySteps
+    type: stepList
+    default: []
+  - name: postApplySteps
+    type: stepList
+    default: []
+  # Azure DevOps environment temporarily disabled.
+  # - name: environmentName
+  #   type: string
+  - name: keyVaultResourceGroup
+    type: string
+    default: ''
+  - name: keyVaultName
+    type: string
+    default: ''
+  - name: stageVariables
+    type: object
+    default: {}
+  - name: manageFirewall
+    type: boolean
+    default: false
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: Execute ${{ parameters.action }} for ${{ parameters.componentName }}
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: and(succeeded(), in('${{ parameters.action }}', 'apply', 'destroy'), ne(variables['Build.Reason'], 'PullRequest'))
+    variables:
+      ${{ insert }}: ${{ parameters.stageVariables }}
+    jobs:
+      # Deployment job and environment binding temporarily disabled.
+      # - deployment: TerraformApply
+      #   environment: '${{ parameters.environmentName }}'
+      - job: TerraformApply
+        displayName: Execute Reviewed Terraform Plan
+        steps:
+                - checkout: self
+                  displayName: Checkout
+
+                - download: none
+
+                - task: DownloadPipelineArtifact@2
+                  displayName: Download Terraform Plan
+                  inputs:
+                    artifact: '${{ parameters.artifactName }}'
+                    path: '$(Pipeline.Workspace)/${{ parameters.artifactName }}'
+
+                - bash: |
+                    set -euo pipefail
+                    install_dir="$(Agent.TempDirectory)/terraform-${{ parameters.terraformVersion }}"
+                    rm -rf "${install_dir}"
+                    mkdir -p "${install_dir}"
+                    wget -q "https://releases.hashicorp.com/terraform/${{ parameters.terraformVersion }}/terraform_${{ parameters.terraformVersion }}_linux_amd64.zip" -O "${install_dir}/terraform.zip"
+                    unzip -q "${install_dir}/terraform.zip" -d "${install_dir}"
+                    sudo install -m 0755 "${install_dir}/terraform" /usr/local/bin/terraform
+                    terraform version
+                    mkdir -p '$(TF_PLUGIN_CACHE_DIR)'
+                  displayName: Install Terraform CLI
+
+                - task: Cache@2
+                  displayName: Restore Terraform Plugin Cache
+                  inputs:
+                    key: 'terraform-providers | "$(Agent.OS)" | "${{ parameters.terraformVersion }}"'
+                    path: '$(TF_PLUGIN_CACHE_DIR)'
+
+                - ${{ if eq(parameters.manageFirewall, true) }}:
+                  - template: firewall-open.yml
+                    parameters:
+                      azureServiceConnection: '${{ parameters.azureServiceConnection }}'
+                      taskName: ApplyFirewall
+                      storageResourceGroup: '${{ parameters.stateResourceGroup }}'
+                      storageAccountName: '${{ parameters.stateStorageAccount }}'
+                      assetsStorageTfvarsFile: '${{ parameters.assetsStorageTfvarsFile }}'
+                      assetsStorageResourceGroup: '${{ parameters.assetsStorageResourceGroup }}'
+                      assetsStorageAccountName: '${{ parameters.assetsStorageAccountName }}'
+                      robotCredentialsKeyVaultTfvarsFile: '${{ parameters.robotCredentialsKeyVaultTfvarsFile }}'
+                      keyVaultResourceGroup: '${{ parameters.keyVaultResourceGroup }}'
+                      keyVaultName: '${{ parameters.keyVaultName }}'
+
+                - task: AzureCLI@2
+                  displayName: Terraform Init for Apply
+                  inputs:
+                    azureSubscription: '${{ parameters.azureServiceConnection }}'
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    workingDirectory: '${{ parameters.workingDirectory }}'
+                    addSpnToEnvironment: true
+                    inlineScript: |
+                      set -euo pipefail
+
+                      export ARM_CLIENT_ID="${servicePrincipalId}"
+                      export ARM_TENANT_ID="${tenantId}"
+                      export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+                      if [ -n "${idToken:-}" ]; then
+                        export ARM_USE_OIDC=true
+                        export ARM_OIDC_TOKEN="${idToken}"
+                      else
+                        export ARM_CLIENT_SECRET="${servicePrincipalKey}"
+                      fi
+
+                      cp "$(Pipeline.Workspace)/${{ parameters.artifactName }}/.terraform.lock.hcl" .terraform.lock.hcl
+
+                      additional_artifact='${{ parameters.additionalArtifactFile }}'
+                      if [ -n "${additional_artifact}" ]; then
+                        relative_path="${additional_artifact#$(Build.SourcesDirectory)/}"
+                        artifact_source="$(Pipeline.Workspace)/${{ parameters.artifactName }}/${relative_path}"
+                        if [ -f "${artifact_source}" ]; then
+                          mkdir -p "$(dirname "${additional_artifact}")"
+                          cp "${artifact_source}" "${additional_artifact}"
+                        fi
+                      fi
+
+                      for attempt in 1 2 3 4 5 6; do
+                        if terraform init -input=false -reconfigure \
+                          -backend-config="resource_group_name=${{ parameters.stateResourceGroup }}" \
+                          -backend-config="storage_account_name=${{ parameters.stateStorageAccount }}" \
+                          -backend-config="container_name=${{ parameters.stateContainer }}" \
+                          -backend-config="key=${{ parameters.stateKey }}" \
+                          -backend-config="use_azuread_auth=true"; then
+                          break
+                        fi
+
+                        if [ "${attempt}" -eq 6 ]; then
+                          echo '##vso[task.logissue type=error]Terraform init failed after waiting for Storage firewall propagation.'
+                          exit 1
+                        fi
+
+                        echo "Terraform init attempt ${attempt} failed; retrying in 10 seconds..."
+                        sleep 10
+                      done
+                  env:
+                    TF_IN_AUTOMATION: $(TF_IN_AUTOMATION)
+                    TF_INPUT: $(TF_INPUT)
+                    TF_PLUGIN_CACHE_DIR: $(TF_PLUGIN_CACHE_DIR)
+
+                - ${{ each step in parameters.preApplySteps }}:
+                  - ${{ step }}
+
+                - template: network-allow-agent.yml
+                  parameters:
+                    azureServiceConnection: '${{ parameters.azureServiceConnection }}'
+
+                - task: AzureCLI@2
+                  displayName: Terraform Apply
+                  inputs:
+                    azureSubscription: '${{ parameters.azureServiceConnection }}'
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    workingDirectory: '${{ parameters.workingDirectory }}'
+                    addSpnToEnvironment: true
+                    inlineScript: |
+                      set -euo pipefail
+
+                      export ARM_CLIENT_ID="${servicePrincipalId}"
+                      export ARM_TENANT_ID="${tenantId}"
+                      export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+                      if [ -n "${idToken:-}" ]; then
+                        export ARM_USE_OIDC=true
+                        export ARM_OIDC_TOKEN="${idToken}"
+                      else
+                        export ARM_CLIENT_SECRET="${servicePrincipalKey}"
+                      fi
+
+                      terraform apply -input=false -lock-timeout=5m -auto-approve \
+                        "$(Pipeline.Workspace)/${{ parameters.artifactName }}/${{ parameters.planFileName }}"
+                  env:
+                    TF_IN_AUTOMATION: $(TF_IN_AUTOMATION)
+                    TF_INPUT: $(TF_INPUT)
+                    TF_PLUGIN_CACHE_DIR: $(TF_PLUGIN_CACHE_DIR)
+
+                - ${{ each step in parameters.postApplySteps }}:
+                  - ${{ step }}
+
+                - template: network-deny-agent.yml
+                  parameters:
+                    azureServiceConnection: '${{ parameters.azureServiceConnection }}'
+
+                - ${{ if eq(parameters.manageFirewall, true) }}:
+                  - template: firewall-close.yml
+                    parameters:
+                      azureServiceConnection: '${{ parameters.azureServiceConnection }}'
+                      displayName: Remove Apply Agent IP From Azure Firewalls
+                      storageResourceGroup: '${{ parameters.stateResourceGroup }}'
+                      storageAccountName: '${{ parameters.stateStorageAccount }}'
+                      keyVaultResourceGroup: '${{ parameters.keyVaultResourceGroup }}'
+                      keyVaultName: '${{ parameters.keyVaultName }}'

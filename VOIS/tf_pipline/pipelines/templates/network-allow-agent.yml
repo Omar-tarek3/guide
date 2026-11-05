@@ -1,0 +1,46 @@
+# Step template: Allow the pipeline agent's public IP on storage account and key vault firewalls.
+# Resource names are expected as stage-level variables:
+#   webjobsStorageAccountName, webjobsStorageAccountResourceGroup,
+#   globalKeyVaultName, globalKeyVaultResourceGroup,
+#   localKeyVaultName, localKeyVaultResourceGroup
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+
+steps:
+  - task: AzureCLI@2
+    displayName: 'Allow agent IP on storage account and key vaults'
+    inputs:
+      azureSubscription: '${{ parameters.azureServiceConnection }}'
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+
+        AGENT_IP=$(curl -s --retry 3 https://api.ipify.org)
+        echo "Agent public IP: ${AGENT_IP}"
+
+        echo "Adding ${AGENT_IP} to storage account $(webjobsStorageAccountName)..."
+        az storage account network-rule add \
+          --account-name "$(webjobsStorageAccountName)" \
+          --resource-group "$(webjobsStorageAccountResourceGroup)" \
+          --ip-address "${AGENT_IP}" \
+          --only-show-errors || true
+
+        echo "Adding ${AGENT_IP} to global key vault $(globalKeyVaultName)..."
+        az keyvault network-rule add \
+          --name "$(globalKeyVaultName)" \
+          --resource-group "$(globalKeyVaultResourceGroup)" \
+          --ip-address "${AGENT_IP}/32" \
+          --only-show-errors || true
+
+        echo "Adding ${AGENT_IP} to local key vault $(localKeyVaultName)..."
+        az keyvault network-rule add \
+          --name "$(localKeyVaultName)" \
+          --resource-group "$(localKeyVaultResourceGroup)" \
+          --ip-address "${AGENT_IP}/32" \
+          --only-show-errors || true
+
+        echo "Waiting 30 seconds for network rules to propagate..."
+        sleep 30

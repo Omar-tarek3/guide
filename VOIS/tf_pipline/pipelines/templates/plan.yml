@@ -1,0 +1,354 @@
+parameters:
+  - name: componentName
+    type: string
+  - name: stageName
+    type: string
+    default: Plan
+  - name: dependsOn
+    type: object
+    default: []
+  - name: action
+    type: string
+  - name: azureServiceConnection
+    type: string
+  - name: terraformVersion
+    type: string
+  - name: workingDirectory
+    type: string
+  - name: stateResourceGroup
+    type: string
+  - name: stateStorageAccount
+    type: string
+  - name: stateContainer
+    type: string
+  - name: stateKey
+    type: string
+  - name: tfvarsFile
+    type: string
+  - name: planFileName
+    type: string
+  - name: artifactName
+    type: string
+  - name: terraformTargets
+    type: object
+    default: []
+  - name: expectedShortCode
+    type: string
+    default: ''
+  - name: dscSourceFile
+    type: string
+    default: ''
+  - name: additionalArtifactFile
+    type: string
+    default: ''
+  - name: assetsStorageTfvarsFile
+    type: string
+    default: ''
+  - name: assetsStorageResourceIdTfvarsFile
+    type: string
+    default: ''
+  - name: assetsStorageResourceGroup
+    type: string
+    default: ''
+  - name: assetsStorageAccountName
+    type: string
+    default: ''
+  - name: robotCredentialsKeyVaultTfvarsFile
+    type: string
+    default: ''
+  - name: keyVaultResourceGroup
+    type: string
+    default: ''
+  - name: keyVaultName
+    type: string
+    default: ''
+  - name: prePlanSteps
+    type: stepList
+    default: []
+  - name: preValidateSteps
+    type: stepList
+    default: []
+  - name: additionalPlanArguments
+    type: object
+    default: []
+  - name: stageVariables
+    type: object
+    default: {}
+  - name: manageFirewall
+    type: boolean
+    default: false
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: Plan ${{ parameters.componentName }}
+    dependsOn: ${{ parameters.dependsOn }}
+    variables:
+      ${{ insert }}: ${{ parameters.stageVariables }}
+    jobs:
+      - job: TerraformPlan
+        displayName: Terraform Validate and Plan
+        steps:
+          - checkout: self
+            displayName: Checkout
+
+          - ${{ if ne(parameters.expectedShortCode, '') }}:
+            - bash: |
+                set -euo pipefail
+
+                tfvars_file='${{ parameters.tfvarsFile }}'
+
+                if [ ! -f "${tfvars_file}" ]; then
+                  echo "##vso[task.logissue type=error]Selected VMSS tfvars file does not exist: ${tfvars_file}"
+                  exit 1
+                fi
+
+                configured_short_code="$(sed -nE 's/^[[:space:]]*short_code[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "${tfvars_file}" | head -n 1)"
+                if [ "${configured_short_code}" != '${{ parameters.expectedShortCode }}' ]; then
+                  echo "##vso[task.logissue type=error]Selected VMSS '${{ parameters.expectedShortCode }}' does not match short_code '${configured_short_code}' in ${tfvars_file}."
+                  exit 1
+                fi
+              displayName: Validate Selected VMSS Inputs
+
+          - bash: |
+              set -euo pipefail
+              install_dir="$(Agent.TempDirectory)/terraform-${{ parameters.terraformVersion }}"
+              rm -rf "${install_dir}"
+              mkdir -p "${install_dir}"
+              wget -q "https://releases.hashicorp.com/terraform/${{ parameters.terraformVersion }}/terraform_${{ parameters.terraformVersion }}_linux_amd64.zip" -O "${install_dir}/terraform.zip"
+              unzip -q "${install_dir}/terraform.zip" -d "${install_dir}"
+              sudo install -m 0755 "${install_dir}/terraform" /usr/local/bin/terraform  #bash install command 
+              terraform version
+              mkdir -p '$(TF_PLUGIN_CACHE_DIR)'
+            displayName: Install Terraform CLI
+
+
+          
+  
+          # on each tf init. it checks the cache directory for existing providers plugins before downloading new ones.
+          # if it finds the required provider plugins in the cache, it will symlink them inside the tf working directory. instead of downloading again.
+          # this dir is used by azure pipline accross multiple runs by leverging the cache@2 task below.
+          - task: Cache@2
+          # Cache@2 is an Azure DevOps task that saves a folder at the end of a pipeline run and restores it at the start of the next one. Pipeline agents are usually fresh machines,
+          # so without it, anything you download (like Terraform providers) is gone after every run and must be downloaded again.
+            displayName: Restore Terraform Plugin Cache
+            inputs:
+              key: 'terraform-providers | "$(Agent.OS)" | "${{ parameters.terraformVersion }}"'
+              path: '$(TF_PLUGIN_CACHE_DIR)'
+
+          - ${{ if eq(parameters.manageFirewall, true) }}:
+            - template: firewall-open.yml
+              parameters:
+                azureServiceConnection: '${{ parameters.azureServiceConnection }}'
+                taskName: PlanFirewall
+                storageResourceGroup: '${{ parameters.stateResourceGroup }}'
+                storageAccountName: '${{ parameters.stateStorageAccount }}'
+                assetsStorageTfvarsFile: '${{ parameters.assetsStorageTfvarsFile }}'
+                assetsStorageResourceIdTfvarsFile: '${{ parameters.assetsStorageResourceIdTfvarsFile }}'
+                assetsStorageResourceGroup: '${{ parameters.assetsStorageResourceGroup }}'
+                assetsStorageAccountName: '${{ parameters.assetsStorageAccountName }}'
+                robotCredentialsKeyVaultTfvarsFile: '${{ parameters.robotCredentialsKeyVaultTfvarsFile }}'
+                keyVaultResourceGroup: '${{ parameters.keyVaultResourceGroup }}'
+                keyVaultName: '${{ parameters.keyVaultName }}'
+
+          # State container provisioning is handled outside this deployment pipeline.
+          # - task: AzureCLI@2
+          #   displayName: Ensure Terraform State Container Exists
+          #   inputs:
+          #     azureSubscription: '${{ parameters.azureServiceConnection }}'
+          #     scriptType: bash
+          #     scriptLocation: inlineScript
+          #     inlineScript: |
+          #       set -euo pipefail
+          #
+          #       created="$(az storage container create \
+          #         --account-name '${{ parameters.stateStorageAccount }}' \
+          #         --name '${{ parameters.stateContainer }}' \
+          #         --auth-mode login \
+          #         --public-access off \
+          #         --only-show-errors \
+          #         --query created \
+          #         --output tsv)"
+          #
+          #       if [ "${created}" = 'true' ]; then
+          #         echo "Created Terraform state container: ${{ parameters.stateContainer }}"
+          #       else
+          #         echo "Terraform state container already exists: ${{ parameters.stateContainer }}"
+          #       fi
+
+          - task: AzureCLI@2
+            displayName: Terraform Init
+            inputs:
+              azureSubscription: '${{ parameters.azureServiceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: '${{ parameters.workingDirectory }}'
+              addSpnToEnvironment: true
+              inlineScript: |
+                set -euo pipefail
+
+                export ARM_CLIENT_ID="${servicePrincipalId}"
+                export ARM_TENANT_ID="${tenantId}"
+                export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+                if [ -n "${idToken:-}" ]; then
+                  export ARM_USE_OIDC=true
+                  export ARM_OIDC_TOKEN="${idToken}"
+                else
+                  export ARM_CLIENT_SECRET="${servicePrincipalKey}"
+                fi
+
+                #tf init with backend configuration and retry logic
+                for attempt in 1 2 3 4 5 6; do
+                  if terraform init -input=false -reconfigure \
+                    -backend-config="resource_group_name=${{ parameters.stateResourceGroup }}" \
+                    -backend-config="storage_account_name=${{ parameters.stateStorageAccount }}" \
+                    -backend-config="container_name=${{ parameters.stateContainer }}" \
+                    -backend-config="key=${{ parameters.stateKey }}" \
+                    -backend-config="use_azuread_auth=true"; then
+                    break
+                  fi
+
+                  if [ "${attempt}" -eq 6 ]; then
+                    echo '##vso[task.logissue type=error]Terraform init failed after waiting for Storage firewall propagation.'
+                    exit 1
+                  fi
+
+                  echo "Terraform init attempt ${attempt} failed; retrying in 10 seconds..."
+                  sleep 10
+                done
+
+            env: #variables defined for Terraform automation at azure-pipeline-prod 
+              TF_IN_AUTOMATION: $(TF_IN_AUTOMATION) 
+              TF_INPUT: $(TF_INPUT)
+              TF_PLUGIN_CACHE_DIR: $(TF_PLUGIN_CACHE_DIR) #creates the cache env to store the Terraform plugin cache dir
+
+          - ${{ each step in parameters.preValidateSteps }}:
+            - ${{ step }}
+
+          - ${{ if ne(parameters.dscSourceFile, '') }}:
+            - bash: |
+                set -euo pipefail
+
+                dsc_source='${{ parameters.dscSourceFile }}'
+                if [ ! -s "${dsc_source}" ]; then
+                  echo "##vso[task.logissue type=error]Selected VMSS DSC source was not generated: ${dsc_source}"
+                  exit 1
+                fi
+              displayName: Validate Generated VMSS DSC
+
+          - bash: |
+
+              # Check and enforce Terraform formatting before proceeding with the plan.
+
+              set -uo pipefail
+
+              if ! terraform fmt -check -recursive; then
+                echo '##vso[task.logissue type=warning]Terraform formatting check failed. Run terraform fmt -recursive and commit the formatting changes.'
+              fi
+            displayName: Terraform Format Check
+            workingDirectory: '${{ parameters.workingDirectory }}'
+
+          - bash: |
+              set -euo pipefail
+              terraform validate
+            displayName: Terraform Validate
+            workingDirectory: '${{ parameters.workingDirectory }}'
+            env:
+              TF_IN_AUTOMATION: $(TF_IN_AUTOMATION)
+              TF_INPUT: $(TF_INPUT)
+              TF_PLUGIN_CACHE_DIR: $(TF_PLUGIN_CACHE_DIR)
+
+          - ${{ each step in parameters.prePlanSteps }}:
+            - ${{ step }}
+
+          - template: network-allow-agent.yml. #get ip of the agent and allow network access on Storage Account and key vault
+            parameters:
+              azureServiceConnection: '${{ parameters.azureServiceConnection }}'
+
+          - task: AzureCLI@2
+            displayName: Terraform Plan
+            inputs:
+              azureSubscription: '${{ parameters.azureServiceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: '${{ parameters.workingDirectory }}'
+              addSpnToEnvironment: true
+              inlineScript: |
+                set -euo pipefail
+
+                export ARM_CLIENT_ID="${servicePrincipalId}"
+                export ARM_TENANT_ID="${tenantId}"
+                export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+                if [ -n "${idToken:-}" ]; then
+                  export ARM_USE_OIDC=true
+                  export ARM_OIDC_TOKEN="${idToken}"
+                else
+                  export ARM_CLIENT_SECRET="${servicePrincipalKey}"
+                fi
+
+                plan_mode=()
+                if [ '${{ parameters.action }}' = 'destroy' ]; then
+                  plan_mode=(-destroy)
+                fi
+
+                target_args=()
+                while IFS= read -r target; do
+                  if [ -n "${target}" ]; then
+                    target_args+=("-target=${target}")
+                  fi
+                done < <(printf '%s' "${TERRAFORM_TARGETS_JSON}" | jq -r '.[]')
+
+                additional_plan_args=()
+                while IFS= read -r argument; do
+                  if [ -n "${argument}" ]; then
+                    additional_plan_args+=("${argument}")
+                  fi
+                done < <(printf '%s' "${ADDITIONAL_PLAN_ARGUMENTS_JSON}" | jq -r '.[]')
+
+                terraform plan -input=false -lock-timeout=5m \
+                  "${plan_mode[@]}" \
+                  "${target_args[@]}" \
+                  "${additional_plan_args[@]}" \
+                  -var-file="${{ parameters.tfvarsFile }}" \
+                  -out="$(Build.ArtifactStagingDirectory)/${{ parameters.planFileName }}"
+                cp .terraform.lock.hcl "$(Build.ArtifactStagingDirectory)/.terraform.lock.hcl"
+
+                additional_artifact='${{ parameters.additionalArtifactFile }}'
+                if [ -n "${additional_artifact}" ] && [ -f "${additional_artifact}" ]; then
+                  relative_path="${additional_artifact#$(Build.SourcesDirectory)/}"
+                  artifact_path="$(Build.ArtifactStagingDirectory)/${relative_path}"
+                  mkdir -p "$(dirname "${artifact_path}")"
+                  cp "${additional_artifact}" "${artifact_path}"
+                fi
+            env:
+              TF_IN_AUTOMATION: $(TF_IN_AUTOMATION)
+              TF_INPUT: $(TF_INPUT)
+              TF_PLUGIN_CACHE_DIR: $(TF_PLUGIN_CACHE_DIR)
+              TERRAFORM_TARGETS_JSON: ${{ convertToJson(parameters.terraformTargets) }}
+              ADDITIONAL_PLAN_ARGUMENTS_JSON: ${{ convertToJson(parameters.additionalPlanArguments) }}
+
+          - bash: |
+              set -euo pipefail
+              terraform show -no-color \
+                "$(Build.ArtifactStagingDirectory)/${{ parameters.planFileName }}"
+            displayName: Show Planned Terraform Changes
+            workingDirectory: '${{ parameters.workingDirectory }}'
+
+          - template: network-deny-agent.yml
+            parameters:
+              azureServiceConnection: '${{ parameters.azureServiceConnection }}'
+
+          - ${{ if eq(parameters.manageFirewall, true) }}:
+            - template: firewall-close.yml
+              parameters:
+                azureServiceConnection: '${{ parameters.azureServiceConnection }}'
+                displayName: Remove Plan Agent IP From Azure Firewalls
+                storageResourceGroup: '${{ parameters.stateResourceGroup }}'
+                storageAccountName: '${{ parameters.stateStorageAccount }}'
+                keyVaultResourceGroup: '${{ parameters.keyVaultResourceGroup }}'
+                keyVaultName: '${{ parameters.keyVaultName }}'
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish Terraform Plan
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)'
+              artifact: '${{ parameters.artifactName }}'

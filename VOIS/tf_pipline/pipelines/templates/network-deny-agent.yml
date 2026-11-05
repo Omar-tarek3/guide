@@ -1,0 +1,43 @@
+# Step template: Remove the pipeline agent's public IP from storage account and key vault firewalls.
+# Resource names are expected as stage-level variables:
+#   webjobsStorageAccountName, webjobsStorageAccountResourceGroup,
+#   globalKeyVaultName, globalKeyVaultResourceGroup,
+#   localKeyVaultName, localKeyVaultResourceGroup
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+
+steps:
+  - task: AzureCLI@2
+    displayName: 'Remove agent IP from storage account and key vaults'
+    condition: always()
+    inputs:
+      azureSubscription: '${{ parameters.azureServiceConnection }}'
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+
+        AGENT_IP=$(curl -s --retry 3 https://api.ipify.org)
+        echo "Removing agent IP ${AGENT_IP} from network rules..."
+
+        az storage account network-rule remove \
+          --account-name "$(webjobsStorageAccountName)" \
+          --resource-group "$(webjobsStorageAccountResourceGroup)" \
+          --ip-address "${AGENT_IP}" \
+          --only-show-errors || true
+
+        az keyvault network-rule remove \
+          --name "$(globalKeyVaultName)" \
+          --resource-group "$(globalKeyVaultResourceGroup)" \
+          --ip-address "${AGENT_IP}/32" \
+          --only-show-errors || true
+
+        az keyvault network-rule remove \
+          --name "$(localKeyVaultName)" \
+          --resource-group "$(localKeyVaultResourceGroup)" \
+          --ip-address "${AGENT_IP}/32" \
+          --only-show-errors || true
+
+        echo "Agent IP removed from all network rules."

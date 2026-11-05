@@ -1,0 +1,102 @@
+parameters:
+  - name: SourceBranch
+    default: ""
+  - name: TargetBranch
+    default: ""
+  - name: PullRequestBody
+    default: "Pull Request Body"  
+
+steps:
+  - task: Checkout@1
+    inputs:
+      repository: 'self'
+      clean: true
+
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.x'
+
+  - task: DownloadSecureFile@1
+    name: downloadPrivateKey
+    inputs:
+      secureFile: 'adoconnectiondcc.2026-10-23.private-key.pem'
+      # secureFile: $(ghaccesstoken-privatekeyname)
+
+  - task: Powershell@2
+    name: SetAccessToken
+    inputs:
+      targetType: 'inline'
+      script: |
+        # Install required dependencies
+        pip install PyJWT cryptography requests      
+
+        # Step 1: Generate JWT using Python script
+        echo "Generating JWT..."
+        #!/usr/bin/env pwsh
+ 
+        $client_id = $(GITHUB_APP_ID)
+
+        $private_key_path = "$(downloadPrivateKey.secureFilePath)"
+
+        $header = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject @{
+          alg = "RS256"
+          typ = "JWT"
+        }))).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+        $payload = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject @{
+          iat = [System.DateTimeOffset]::UtcNow.AddSeconds(-10).ToUnixTimeSeconds()
+          exp = [System.DateTimeOffset]::UtcNow.AddMinutes(10).ToUnixTimeSeconds()
+            iss = $client_id
+        }))).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+        $rsa = [System.Security.Cryptography.RSA]::Create()
+        $rsa.ImportFromPem((Get-Content $private_key_path -Raw))
+
+        $signature = [Convert]::ToBase64String($rsa.SignData([System.Text.Encoding]::UTF8.GetBytes("$header.$payload"), [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+        $jwt = "$header.$payload.$signature"
+
+        $url = "https://api.github.com/app/installations"
+        $headers = @{
+          "Accept" = "application/vnd.github+json"    
+          "Authorization"        = "Bearer $jwt"        
+          "X-GitHub-Api-Version" = "2022-11-28" 
+         }
+
+        $response = Invoke-RestMethod -Uri $url -Method Get -Headers $headers
+        $response | ConvertTo-Json 
+
+        $InstallationId = $response[0].id
+
+        $TokenUrl = "https://api.github.com/app/installations/$InstallationId/access_tokens"
+        $TokenHeaders = @{
+            "Accept" = "application/vnd.github.machine-man-preview+json"
+            "Authorization" = "Bearer $jwt"
+        }
+
+        $TokenResponse = Invoke-RestMethod -Uri $TokenUrl -Headers $TokenHeaders -Method Post
+
+        $gh_accesstoken = $TokenResponse.token
+
+        Write-Output "##vso[task.setvariable variable=ACCESS_TOKENS;isOutput=true]$gh_accesstoken"  
+    env:
+      GITHUB_APP_ID: $(GITHUB_APP_ID)
+
+  - task: Bash@3
+    inputs:
+      workingDirectory: '$(System.DefaultWorkingDirectory)/LambdaLoaders'
+      targetType: 'inline'
+      script: |
+        echo $(SetAccessToken.ACCESS_TOKENS) | gh auth login --with-token
+        # Get the PR list in JSON format
+        pr=$(gh pr list --search "Pull Request from ${{ parameters.SourceBranch }}" --json number,title)
+        
+        # Check if any PRs were found
+        if [[ $(echo "$pr" | jq '. | length') -gt 0 ]]; then
+          echo "PR already exists with source branch ${{ parameters.SourceBranch }}."
+          exit 0
+        else
+          echo "Creating PR from branch: ${{ parameters.SourceBranch }} to ${{ parameters.TargetBranch }}"
+          gh pr create --title "Pull Request from ${{ parameters.SourceBranch }}" \
+                            --body "${{ parameters.PullRequestBody }}" --head "${{ parameters.SourceBranch }}" \
+                            --base "${{ parameters.TargetBranch }}"
+        fi
