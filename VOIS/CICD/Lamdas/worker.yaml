@@ -1,0 +1,252 @@
+name: Build and Deploy UiPath Package
+
+on:
+  push:
+
+jobs:
+  build-and-deploy:
+    runs-on:
+      group: Hc-Runners-Group # Use a self-hosted runnerr
+
+    steps:
+      # Step 1: Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          repository: ${{ inputs.repo_name }}
+          ref: ${{ inputs.branch_name }}
+          token: ${{ secrets.org_github_token }}
+          ORCH_USERNAME: ${{ secrets.orch_username }}
+          ORCH_PASSWORD: ${{ secrets.orch_password }}
+          #folder-path: "Production/Test_CI_CD_Main/test_cicd_1"#
+
+
+      # Step 2: Download and extract UiPath CLI
+      - name: Get UiPath CLI
+        run: |
+          $env:https_proxy = "http://vpce-0974f7457e940e4bf-0s4t8nsz.vpce-svc-0ffc3575422275d21.eu-central-1.vpce.amazonaws.com:8081"
+          $env:http_proxy = "http://vpce-0974f7457e940e4bf-0s4t8nsz.vpce-svc-0ffc3575422275d21.eu-central-1.vpce.amazonaws.com:8081"
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    
+          if (-Not (Test-Path "C:\\uipathcli")) {
+            New-Item -Path "C:\\" -ItemType "directory" -Name "uipathcli"
+          } else {
+            Write-Host "Directory C:\\uipathcli already exists, skipping creation."
+          }
+    
+          # Download UiPath CLI and extract
+          #Invoke-WebRequest "https://www.myget.org/F/uipath-dev/api/v2/package/UiPath.CLI/1.0.7985.19721" -OutFile "C:\\uipathcli\\cli.zip" -Proxy "http://vpce-0974f7457e940e4bf-0s4t8nsz.vpce-svc-0ffc3575422275d21.eu-central-1.vpce.amazonaws.com:8081/"
+          #Expand-Archive -LiteralPath "C:\\uipathcli\\cli.Zip" -DestinationPath "C:\\uipathcli" -Force
+          Invoke-WebRequest -Uri "https://dist.nuget.org/win-x86-commandline/latest/nuget.exe" -OutFile "C:\\uipathcli\\nuget.exe"
+          C:\uipathcli\nuget.exe install UiPath.CLI.Windows -Version 25.4.9301.33152 -Source "https://uipath.pkgs.visualstudio.com/Public.Feeds/_packaging/UiPath-Official/nuget/v3/index.json" -OutputDirectory "C:\\uipathcli"
+          ls C:\\uipathcli
+
+          
+      - name: Add dotnet to PATH
+        run: echo "C:\Program Files\dotnet" >> $env:GITHUB_PATH
+
+      - name: Verify dotnet
+        run: dotnet --version 
+
+
+        
+      # Step 3: Pack UiPath Package from RPA_Worker/Code directory
+      - name: Pack UiPath Package and Deploy 
+        id: package_step  # ID so we can access outputs
+
+        run: |
+          $env:https_proxy = "http://vpce-0ff47d7f2cd3a971b-90aepqr0.vpce-svc-09097c7d011d0dd07.eu-central-1.vpce.amazonaws.com:8081"
+          $env:http_proxy = "http://vpce-0ff47d7f2cd3a971b-90aepqr0.vpce-svc-09097c7d011d0dd07.eu-central-1.vpce.amazonaws.com:8081"
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $username = "${{ secrets.orch_username }}"
+          $password = "${{ secrets.orch_password }}"
+          
+
+          # Navigate to the RPA_Worker/Code directory and find the project.json
+          $project_path = "${{ github.workspace }}\RPA_Worker\Code\project.json"
+
+          # Windows-Legacy package
+          # DO NOT USE  !!! $project_path = "C:\Users\omar.abdelall\Downloads\OTC_Customer_Invoice_Posting_Worker-legacy.2.2.34\lib\net45\project.json"
+
+
+          # path for Uipath cli executable 
+          $uipcli = "C:\\uipathcli\\UiPath.CLI.Windows.25.4.9301.33152\\tools\\uipcli.exe"
+          
+          # Folder Path 
+          #$folder_path = "Hypercare_VOIS/Test_CI_CD_Main/test_cicd_1"
+          #$folder_path = "Hypercare_VOIS/Customer-Operations_LM_1234_LM_VOIS_DevOpsTestPipeLines/Customer-Operations_LM_1234_LM_VOIS_DevOpsTestPipeLines_Worker"
+          $folder_path = "${{ vars.WORKER_FOLDER }}"
+  
+
+
+          if (Test-Path $project_path) {
+              $json = Get-Content "$project_path" | Out-String | ConvertFrom-Json
+              $projectVersion = $json.projectVersion
+              $projectName = $json.name
+              $version = "{0}.{1}.{2}.{3}" -f ([version] "$projectVersion").Major, ([version] "$projectVersion").Minor, ([version] "$projectVersion").Build, "${{github.run_number}}"
+              
+              echo "Project version is $version"
+              echo "Project name is $projectName"
+              echo "folder path >>>  $folder_path"
+              
+              # Build the package from RPA_Worker/Code
+              # & "C:\\uipathcli\\lib\\net461\\uipcli.exe" package pack "$project_path" -o "${{ github.workspace }}" -v $version -l en-US
+              # & "C:\\uipathcli\\lib\\net461\\uipcli.exe" package deploy "${{ github.workspace }}\$($projectName).$VERSION.nupkg" "https://orchestrator.iaprobotics.vodafone.com" Default -u "$username" -p "$password" -e SAPEnvironment,ExcelAutomationEnvironment -l en-US -o "$folder_path"
+              echo "##############################################################################################################"
+              echo "Starting code packaging (.nupkg file generation) ..."
+              echo "##############################################################################################################"
+              & "$uipcli" package pack "$project_path" -o "${{ github.workspace }}" -v $version -l en-US
+              
+              Remove-Item Env:http_proxy
+              Remove-Item Env:https_proxy
+              echo "##############################################################################################################"
+              echo "Starting Deploying packaged code..."
+              echo "##############################################################################################################"
+              & "$uipcli" package deploy "${{ github.workspace }}\$($projectName).$VERSION.nupkg" "https://orchestrator.iaprobotics.vodafone.com" "Default" -u "$username" -p "$password" --traceLevel Verbose -o "$folder_path"
+
+               
+              # echo "Package created successfully: $folder_path"
+                       
+              echo "::set-output name=package_version::$version"
+              echo "::set-output name=package_name::$projectName"
+
+          } else {
+              Write-Host "Error: project.json not found in RPA_Worker/Code directory."
+              exit 1
+          }  # <-- This is the missing curly brace that has been added here.
+
+      # # Step 4: Deploy the package to UiPath Orchestrator
+      # - name: Deploy UiPath Package to Orchestrator
+      #   run: |
+      #     $env:https_proxy = "http://vpce-0ff47d7f2cd3a971b-90aepqr0.vpce-svc-09097c7d011d0dd07.eu-central-1.vpce.amazonaws.com:8081"
+      #     $env:http_proxy = "http://vpce-0ff47d7f2cd3a971b-90aepqr0.vpce-svc-09097c7d011d0dd07.eu-central-1.vpce.amazonaws.com:8081"
+      #     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+     
+      #     $username = "${{ secrets.UIPATH_USERNAME }}"
+      #     $password = "${{ secrets.UIPATH_PASSWORD }}"
+      #     $url = "${{ secrets.UIPATH_ORCHESTRATOR_URL }}"
+      #     $tenant = "${{ secrets.UIPATH_TENANT }}"
+          
+      #     # Correct the use of variables for the package path
+      #     $packagePath = "${{ github.workspace }}\$(${{ steps.package_step.outputs.package_name }}).${{ steps.package_step.outputs.package_version }}.nupkg"
+       
+      #     # Deploy the package to Orchestrator using username and password
+      #     & "C:\\uipathcli\\lib\\net461\\uipcli.exe" package deploy "$packagePath" "$url" "$tenant" `
+      #       -u "$username" `
+      #       -p "$password"
+
+---
+#old worker.yaml
+
+name: Build and Deploy UiPath Package
+
+on:
+  workflow_call:
+    inputs:
+      repo_name:
+        required: true
+        type: string
+      branch_name:
+        required: true
+        type: string
+      worker_folder:
+        required: true
+        type: string
+    secrets:
+      org_token:
+        required: true
+      orch_username:
+        required: true
+      orch_password:
+        required: true
+
+
+
+jobs:
+  build-and-deploy:
+    runs-on:
+      group: Hc-Runners-Group # Use a self-hosted runner
+
+    steps:
+      # Step 1: Checkout the repository
+      - name: Checkout code
+###changes
+        uses: actions/checkout@v3
+        with:
+          repository: ${{ inputs.repo_name }}
+          ref: ${{ inputs.branch_name }}
+          token: ${{ secrets.org_token }}
+          ORCH_USERNAME: ${{ secrets.orch_username }}
+          ORCH_PASSWORD: ${{ secrets.orch_password }}
+
+
+      # Step 2: Download and extract UiPath CLI
+      - name: Get UiPath CLI
+        run: |
+          $env:https_proxy = "http://vpce-0974f7457e940e4bf-0s4t8nsz.vpce-svc-0ffc3575422275d21.eu-central-1.vpce.amazonaws.com:8081"
+          $env:http_proxy = "http://vpce-0974f7457e940e4bf-0s4t8nsz.vpce-svc-0ffc3575422275d21.eu-central-1.vpce.amazonaws.com:8081"
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    
+          if (-Not (Test-Path "C:\\uipathcli")) {
+            New-Item -Path "C:\\" -ItemType "directory" -Name "uipathcli"
+          } else {
+            Write-Host "Directory C:\\uipathcli already exists, skipping creation."
+          }
+    
+          # Download UiPath CLI and extract
+          Invoke-WebRequest "https://www.myget.org/F/uipath-dev/api/v2/package/UiPath.CLI/1.0.7985.19721" -OutFile "C:\\uipathcli\\cli.zip"
+          Expand-Archive -LiteralPath "C:\\uipathcli\\cli.Zip" -DestinationPath "C:\\uipathcli" -Force
+
+      # Step 3: Pack UiPath Package from RPA_Worker/Code directory
+      - name: Pack UiPath Package
+        id: package_step  # ID so we can access outputs
+        run: |
+          $env:https_proxy = "http://vpce-0974f7457e940e4bf-0s4t8nsz.vpce-svc-0ffc3575422275d21.eu-central-1.vpce.amazonaws.com:8081"
+          $env:http_proxy = "http://vpce-0974f7457e940e4bf-0s4t8nsz.vpce-svc-0ffc3575422275d21.eu-central-1.vpce.amazonaws.com:8081"
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $username = "${{ secrets.orch_username }}"
+          $password = "${{ secrets.orch_password }}"
+
+          # Navigate to the RPA_Worker/Code directory and find the project.json
+          $project_path = "${{ github.workspace }}\RPA_Worker\Code\project.json"
+
+          if (Test-Path $project_path) {
+              $json = Get-Content "$project_path" | Out-String | ConvertFrom-Json
+              $projectVersion = $json.projectVersion
+              $projectName = $json.name
+              $version = "{0}.{1}.{2}.{3}" -f ([version] "$projectVersion").Major, ([version] "$projectVersion").Minor, ([version] "$projectVersion").Build, "${{github.run_number}}"
+              
+              echo "Project version is $version"
+              echo "Project name is $projectName"
+              
+              # Build the package from RPA_Worker/Code
+              & "C:\\uipathcli\\lib\\net461\\uipcli.exe" package pack "$project_path" -o "${{ github.workspace }}" -v $version -l en-US
+              & "C:\\uipathcli\\lib\\net461\\uipcli.exe" package deploy "${{ github.workspace }}\$($projectName).$VERSION.nupkg" "https://orchestrator.iaprobotics.vodafone.com" Default -u "$username" -p "$password" -e SAPEnvironment,ExcelAutomationEnvironment -l en-US -o "${{ inputs.worker_folder }}"
+                       
+              echo "::set-output name=package_version::$version"
+              echo "::set-output name=package_name::$projectName"
+
+          } else {
+              Write-Host "Error: project.json not found in RPA_Worker/Code directory."
+              exit 1
+          }  # <-- This is the missing curly brace that has been added here.
+
+      # # Step 4: Deploy the package to UiPath Orchestrator
+      # - name: Deploy UiPath Package to Orchestrator
+      #   run: |
+      #     $env:https_proxy = "http://vpce-0ff47d7f2cd3a971b-90aepqr0.vpce-svc-09097c7d011d0dd07.eu-central-1.vpce.amazonaws.com:8081"
+      #     $env:http_proxy = "http://vpce-0ff47d7f2cd3a971b-90aepqr0.vpce-svc-09097c7d011d0dd07.eu-central-1.vpce.amazonaws.com:8081"
+      #     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+     
+      #     $username = "${{ secrets.UIPATH_USERNAME }}"
+      #     $password = "${{ secrets.UIPATH_PASSWORD }}"
+      #     $url = "${{ secrets.UIPATH_ORCHESTRATOR_URL }}"
+      #     $tenant = "${{ secrets.UIPATH_TENANT }}"
+          
+      #     # Correct the use of variables for the package path
+      #     $packagePath = "${{ github.workspace }}\$(${{ steps.package_step.outputs.package_name }}).${{ steps.package_step.outputs.package_version }}.nupkg"
+       
+      #     # Deploy the package to Orchestrator using username and password
+      #     & "C:\\uipathcli\\lib\\net461\\uipcli.exe" package deploy "$packagePath" "$url" "$tenant" `
+      #       -u "$username" `
+      #       -p "$password"
