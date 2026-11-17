@@ -1,0 +1,88 @@
+module "net_sg" {
+  source = "./modules/sg-onecall"
+
+  security_groups = {
+    sg_web = {
+      vpc_id = var.vpc_id
+      tags   = { App = "shop", Tier = "web", Env = "prod" }
+
+      ingress_rules = [
+        {
+          description      = "HTTPS/HTTP from Internet"
+          protocol         = "tcp"
+          ports            = [443, 80]
+          cidr_blocks      = ["0.0.0.0/0"]
+          ipv6_cidr_blocks = ["::/0"]
+        },
+        {
+          description = "ICMP echo"
+          protocol    = "icmp"
+          from_port   = 8
+          to_port     = 0
+          cidr_blocks = ["0.0.0.0/0"]
+        }
+      ]
+
+      egress_rules                = []
+      allow_all_egress_when_empty = true
+    }
+
+    sg_bastion = {
+      vpc_id = var.vpc_id
+      tags   = { App = "infra", Tier = "bastion", Env = "prod" }
+
+      ingress_rules = [
+        { description="SSH from office", protocol="tcp", from_port=22, to_port=22, cidr_blocks=["203.0.113.0/24"] },
+        { description="Intra-SG admin 2200–2300", protocol="tcp", from_port=2200, to_port=2300, self=true }
+      ]
+
+      egress_rules = [
+        { description="443 to VPC endpoints", protocol="tcp", ports=[443], prefix_list_ids=["pl-0123456789abcdef0"] }
+      ]
+    }
+
+    sg_app = {
+      name   = "backend-app-sg"
+      vpc_id = var.vpc_id
+      tags   = { App = "shop", Tier = "app", Env = "prod" }
+
+      ingress_rules = [
+        { description="Web → App 8080", protocol="tcp", ports=[8080], source_sg_keys=["sg_web"] },
+        { description="UDP game 20000–20100", protocol="udp", from_port=20000, to_port=20100, cidr_blocks=["0.0.0.0/0"] }
+      ]
+
+      egress_rules = [
+        { description="App → DB 5432", protocol="tcp", ports=[5432], destination_sg_keys=["sg_db"] }
+      ]
+    }
+
+    sg_db = {
+      vpc_id = var.vpc_id
+      tags   = { App = "shop", Tier = "db", Env = "prod" }
+
+      ingress_rules = [
+        { description="App → DB 5432", protocol="tcp", ports=[5432], source_sg_keys=["sg_app"] }
+      ]
+
+      egress_rules = [
+        { description="Backup agent → backup service 443", protocol="tcp", ports=[443], destination_security_group_ids=["sg-0abcde1234567890f"] }
+      ]
+    }
+
+    sg_internal = {
+      vpc_id = var.vpc_id
+      tags   = { App = "tools", Tier = "internal", Env = "prod" }
+
+      ingress_rules = [
+        { description="Tools UI IPv6 only", protocol="tcp", ports=[8443], ipv6_cidr_blocks=["2001:db8:abcd::/48"] }
+      ]
+
+      egress_rules = [
+        { description="IPv6 outbound all TCP", protocol="tcp", from_port=1, to_port=65535, ipv6_cidr_blocks=["::/0"] }
+      ]
+    }
+  }
+}
+
+output "sg_ids"  { value = module.net_sg.sg_ids_by_key  }
+output "sg_arns" { value = module.net_sg.sg_arns_by_key }

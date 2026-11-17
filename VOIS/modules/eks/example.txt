@@ -1,0 +1,373 @@
+##############################################
+# example.txt — Production-grade examples using tfvars
+# Each scenario shows:
+#  - root/main.tf (module wiring, uses ONLY var.*)
+#  - root/terraform.tfvars (example values)
+# Style: always use var.* with inline comments like cluster_name = var.cluster_name # "demo-cluster"
+##############################################
+
+============================================================
+Scenario A — Minimal Cluster (no addons, 1 node group)
+============================================================
+
+# root/main.tf
+module "eks" {
+  source = "../modules/eks"
+
+  cluster_name     = var.cluster_name     # "demo-cluster"
+  cluster_version  = var.cluster_version  # "1.30"
+  vpc_id           = var.vpc_id           # "vpc-xxxx"
+  private_subnets  = var.private_subnets  # ["subnet-aaa","subnet-bbb"]
+
+  public_access_enabled  = var.public_access_enabled  # true
+  public_access_cidrs    = var.public_access_cidrs    # ["0.0.0.0/0"]
+
+  EKS_NODE_GROUP_DEFINITIONS = var.node_groups
+}
+
+# root/terraform.tfvars
+cluster_name     = "demo-cluster"
+cluster_version  = "1.30"
+vpc_id           = "vpc-0123456789abcdef0"
+private_subnets  = ["subnet-1111","subnet-2222"]
+
+public_access_enabled = true
+public_access_cidrs   = ["0.0.0.0/0"]
+
+node_groups = [
+  {
+    type             = "ON_DEMAND"
+    suffix           = "general"
+    fleet            = ["t3.medium"]
+    ami              = "ami-012345"
+    root_volume_size = 20
+    desired_size     = 2
+    max_size         = 3
+    min_size         = 1
+    is_taint         = false
+    taint            = null
+  }
+
+
+####### this part to be able for authintcate to the eks through local ########
+
+authentication_mode = "API" #OR CONFIG_MAP 
+
+eks_access_roles = {
+  "access1" = { 
+    ### this only for type=standard the default it make association for the access entry ###
+    principal_arn     = "role arn"
+    kubernetes_groups = ["masters"]
+    policy_arn        = "policy arn"
+    access_scope_type = "cluster" #OR NAMESPACE
+  }
+  "access2" = { 
+    #### this for any type except STANDARD as the association is disabled on this case ###
+    principal_arn     = "role arn"
+    type              = EC2_LINUX
+    access_scope_type = "cluster" #OR NAMESPACE
+  }
+
+}
+
+]
+
+============================================================
+Scenario B — Private-only Cluster (API endpoint only inside VPC)
+============================================================
+
+# root/main.tf
+module "eks" {
+  source = "../modules/eks"
+
+  cluster_name     = var.cluster_name     # "private-cluster"
+  cluster_version  = var.cluster_version  # "1.30"
+  vpc_id           = var.vpc_id           # "vpc-xxxx"
+  private_subnets  = var.private_subnets  # ["subnet-aaa","subnet-bbb"]
+
+  private_access_allowed = var.private_access_allowed # true
+  public_access_enabled  = var.public_access_enabled  # false
+
+  EKS_NODE_GROUP_DEFINITIONS = var.node_groups
+}
+
+# root/terraform.tfvars
+cluster_name     = "private-cluster"
+cluster_version  = "1.30"
+vpc_id           = "vpc-0123456789abcdef0"
+private_subnets  = ["subnet-3333","subnet-4444"]
+
+private_access_allowed = true
+public_access_enabled  = false
+
+node_groups = [
+  {
+    type             = "ON_DEMAND"
+    suffix           = "system"
+    fleet            = ["m5.large"]
+    ami              = "ami-abc123"
+    root_volume_size = 40
+    desired_size     = 2
+    max_size         = 4
+    min_size         = 2
+    is_taint         = false
+    taint            = null
+  }
+]
+
+============================================================
+Scenario C — Public Cluster Restricted to CIDRs (Corp Network)
+============================================================
+
+# root/main.tf
+module "eks" {
+  source = "../modules/eks"
+
+  cluster_name     = var.cluster_name     # "corp-cluster"
+  cluster_version  = var.cluster_version  # "1.30"
+  vpc_id           = var.vpc_id           # "vpc-xxxx"
+  private_subnets  = var.private_subnets  # ["subnet-aaa","subnet-bbb"]
+  public_subnets   = var.public_subnets   # ["subnet-ccc","subnet-ddd"]
+
+  public_access_enabled = var.public_access_enabled # true
+  public_access_cidrs   = var.public_access_cidrs   # ["203.0.113.0/24","198.51.100.0/24"]
+
+  EKS_NODE_GROUP_DEFINITIONS = var.node_groups
+}
+
+# root/terraform.tfvars
+cluster_name     = "corp-cluster"
+cluster_version  = "1.30"
+vpc_id           = "vpc-0123456789abcdef0"
+private_subnets  = ["subnet-aaa","subnet-bbb"]
+public_subnets   = ["subnet-ccc","subnet-ddd"]
+
+public_access_enabled = true
+public_access_cidrs   = ["203.0.113.0/24","198.51.100.0/24"]
+
+node_groups = [
+  {
+    type             = "ON_DEMAND"
+    suffix           = "general"
+    fleet            = ["m5.large"]
+    ami              = "ami-xyz123"
+    root_volume_size = 50
+    desired_size     = 3
+    max_size         = 6
+    min_size         = 2
+    is_taint         = false
+    taint            = null
+  }
+]
+
+============================================================
+Scenario D — Full Production Cluster (Addons + IRSA + Tags)
+============================================================
+
+# root/main.tf
+module "eks" {
+  source = "../modules/eks"
+
+  cluster_name     = var.cluster_name     # "prod-platform"
+  cluster_version  = var.cluster_version  # "1.30"
+  vpc_id           = var.vpc_id           # "vpc-xxxx"
+  private_subnets  = var.private_subnets  # ["subnet-aaa","subnet-bbb"]
+  public_subnets   = var.public_subnets   # ["subnet-ccc","subnet-ddd"]
+  eks_kms_arn      = var.eks_kms_arn      # "arn:aws:kms:region:acct:key/xxxx"
+  DEFAULT_TAGS     = var.default_tags     # { Project="Core", Env="prod" }
+
+  private_access_allowed = var.private_access_allowed # true
+  public_access_enabled  = var.public_access_enabled  # true
+  public_access_cidrs    = var.public_access_cidrs    # ["0.0.0.0/0"]
+
+  irsa_bindings = var.irsa_bindings # EBS & EFS roles
+
+  enable_vpc_cni     = var.enable_vpc_cni     # true
+  vpc_cni_version    = var.vpc_cni_version    # "v1.16.4-eksbuild.1"
+  enable_coredns     = var.enable_coredns     # true
+  coredns_version    = var.coredns_version    # "v1.11.1-eksbuild.2"
+  enable_kube_proxy  = var.enable_kube_proxy  # true
+  kube_proxy_version = var.kube_proxy_version # "v1.30.2-eksbuild.1"
+  enable_ebs_csi     = var.enable_ebs_csi     # true
+  ebs_csi_version    = var.ebs_csi_version    # "v1.30.0-eksbuild.1"
+
+  EKS_NODE_GROUP_DEFINITIONS = var.node_groups
+}
+
+# root/terraform.tfvars
+cluster_name     = "prod-platform"
+cluster_version  = "1.30"
+vpc_id           = "vpc-0123456789abcdef0"
+private_subnets  = ["subnet-1111","subnet-2222"]
+public_subnets   = ["subnet-3333","subnet-4444"]
+eks_kms_arn      = "arn:aws:kms:us-east-1:111122223333:key/abc-123"
+default_tags = {
+  Project = "Core"
+  Env     = "prod"
+  Owner   = "platform-team"
+}
+
+private_access_allowed = true
+public_access_enabled  = true
+public_access_cidrs    = ["0.0.0.0/0"]
+
+irsa_bindings = [
+  {
+    name        = "ebs-csi-controller"
+    namespace   = "kube-system"
+    role_suffix = "ebs-csi-controller"
+    policy_arns = ["arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"]
+    custom_policy_file = null
+    create      = true
+  },
+  {
+    name        = "efs-csi-controller-sa"
+    namespace   = "kube-system"
+    role_suffix = "efs-csi-controller"
+    policy_arns = ["arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy"]
+    custom_policy_file = null
+    create      = true
+  }
+]
+
+enable_vpc_cni     = true
+vpc_cni_version    = "v1.16.4-eksbuild.1"
+enable_coredns     = true
+coredns_version    = "v1.11.1-eksbuild.2"
+enable_kube_proxy  = true
+kube_proxy_version = "v1.30.2-eksbuild.1"
+enable_ebs_csi     = true
+ebs_csi_version    = "v1.30.0-eksbuild.1"
+
+node_groups = [
+  {
+    type             = "ON_DEMAND"
+    suffix           = "system"
+    fleet            = ["m5.large"]
+    ami              = "ami-0abc111"
+    root_volume_size = 40
+    desired_size     = 3
+    max_size         = 6
+    min_size         = 3
+    is_taint         = false
+    taint            = null
+  },
+  {
+    type             = "SPOT"
+    suffix           = "apps"
+    fleet            = ["m5.large","m5a.large"]
+    ami              = "ami-0abc222"
+    root_volume_size = 50
+    desired_size     = 4
+    max_size         = 10
+    min_size         = 2
+    is_taint         = true
+    taint = {
+      key    = "workload"
+      value  = "batch"
+      effect = "NO_SCHEDULE"
+    }
+  }
+]
+
+============================================================
+Scenario E — Custom IRSA Role with Custom Policy
+============================================================
+
+# root/main.tf
+module "eks" {
+  source = "../modules/eks"
+
+  cluster_name     = var.cluster_name     # "custom-irsa-cluster"
+  cluster_version  = var.cluster_version  # "1.30"
+  vpc_id           = var.vpc_id           # "vpc-xxxx"
+  private_subnets  = var.private_subnets  # ["subnet-aaa","subnet-bbb"]
+
+  irsa_bindings = var.irsa_bindings
+
+  EKS_NODE_GROUP_DEFINITIONS = var.node_groups
+}
+
+# root/terraform.tfvars
+cluster_name     = "custom-irsa-cluster"
+cluster_version  = "1.30"
+vpc_id           = "vpc-0123456789abcdef0"
+private_subnets  = ["subnet-1111","subnet-2222"]
+
+irsa_bindings = [
+  {
+    name        = "logger"
+    namespace   = "logging"
+    role_suffix = "logger-role"
+    policy_arns = []
+    custom_policy_file = "./policies/logger-policy.json"
+    create      = true
+  }
+]
+
+node_groups = [
+  {
+    type             = "ON_DEMAND"
+    suffix           = "general"
+    fleet            = ["t3.medium"]
+    ami              = "ami-0abc333"
+    root_volume_size = 20
+    desired_size     = 2
+    max_size         = 4
+    min_size         = 1
+    is_taint         = false
+    taint            = null
+  }
+]
+
+============================================================
+Scenario F — Karpenter IRSA Role Example
+============================================================
+
+# root/main.tf
+module "eks" {
+  source = "../modules/eks"
+
+  cluster_name     = var.cluster_name     # "karpenter-cluster"
+  cluster_version  = var.cluster_version  # "1.30"
+  vpc_id           = var.vpc_id           # "vpc-xxxx"
+  private_subnets  = var.private_subnets  # ["subnet-aaa","subnet-bbb"]
+  public_subnets   = var.public_subnets   # ["subnet-ccc","subnet-ddd"]
+
+  irsa_bindings = var.irsa_bindings
+
+  EKS_NODE_GROUP_DEFINITIONS = var.node_groups
+}
+
+# root/terraform.tfvars
+cluster_name     = "karpenter-cluster"
+cluster_version  = "1.30"
+vpc_id           = "vpc-0123456789abcdef0"
+private_subnets  = ["subnet-1111","subnet-2222"]
+public_subnets   = ["subnet-3333","subnet-4444"]
+
+irsa_bindings = [
+  {
+    name        = "karpenter-controller"
+    namespace   = "karpenter"
+    role_suffix = "karpenter-controller"
+    policy_arns = []
+    custom_policy_file = "./policies/karpenter-controller.json"
+    create      = true
+  }
+]
+
+node_groups = [
+  {
+    type             = "ON_DEMAND"
+    suffix           = "system"
+    fleet            = ["m5.large"]
+    ami              = "ami-0abc444"
+    root_volume_size = 40
+    desired_size     = 2
+    max_size         = 5
+    min_size         = 2
+    is_taint         = false
+    taint            = null
+  }
+]

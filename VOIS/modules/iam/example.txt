@@ -1,0 +1,83 @@
+# provider.tf
+terraform {
+  required_version = ">= 1.5.0"
+}
+provider "aws" {
+  region = "us-east-1"
+}
+
+# main.tf (root)
+module "iam" {
+  source = "./modules/iam-onecall"
+
+  roles = {
+    web = {
+      name        = "app-web-role"
+      description = "EC2 role for web app"
+      tags        = { Project = "prod-app", Env = "prod", Owner = "platform" }
+      trust_file  = "${path.root}/policies/trust/web.json"
+      instance_profile = { create = true }
+      inline_policies = {
+        deny_dangerous = jsonencode({
+          Version = "2012-10-17",
+          Statement = [{
+            Effect   = "Deny",
+            Action   = ["iam:DeleteRole","iam:DeletePolicy","iam:PutRolePolicy"],
+            Resource = "*"
+          }]
+        })
+      }
+      inline_policy_files = {
+        cw_logs_basic = "${path.root}/policies/inline/cw_logs_basic.json"
+      }
+    }
+
+    ingestion = {
+      name        = "data-ingestion-role"
+      description = "Lambda/EventBridge role for ingestion"
+      tags        = { Project = "prod-app", Env = "prod", Owner = "data" }
+      trust_file  = "${path.root}/policies/trust/ingestion.json"
+      inline_policy_files = {
+        readonly_extra = "${path.root}/policies/inline/readonly_extra.json"
+      }
+    }
+
+    analytics = {
+      name                     = "analytics-consumer-role"
+      description              = "Analyst access via trusted principals"
+      tags                     = { Project = "analytics", Env = "prod", Owner = "bi" }
+      trusted_services         = []
+      trusted_aws_principals   = ["arn:aws:iam::111122223333:role/analyst"]
+      trust_conditions         = { StringEquals = { "aws:PrincipalOrgID" = "o-exampleorgid" } }
+    }
+  }
+
+  policies = {
+    s3_rw_app = {
+      description = "App S3 read/write for main bucket"
+      file        = "${path.root}/policies/s3_rw_app.json"
+      tags        = { Project = "prod-app", Tier = "data" }
+    }
+    metrics_write = {
+      description = "CloudWatch PutMetricData"
+      json = jsonencode({
+        Version = "2012-10-17",
+        Statement = [{
+          Effect   = "Allow",
+          Action   = ["cloudwatch:PutMetricData"],
+          Resource = "*"
+        }]
+      })
+    }
+  }
+
+  attachments = [
+    { role_key = "web",       policy_key = "s3_rw_app" },
+    { role_key = "ingestion", policy_key = "metrics_write" },
+
+    { role_key  = "web",       policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore" },
+    { role_key  = "ingestion", policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole" },
+
+    { role_name = "central-observability-role", policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy" }
+  ]
+}
